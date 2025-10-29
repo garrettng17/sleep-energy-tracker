@@ -1,0 +1,406 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Sleep & Energy Tracker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root { --bg:#f8fafc; --card:#ffffff; --ink:#111827; --muted:#6b7280; --accent:#2563eb; --soft:#e5e7eb; }
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, Arial, sans-serif; background:var(--bg); color:var(--ink); margin:24px; }
+  h1 { color:var(--accent); margin-bottom:12px; }
+  .card { background:var(--card); border-radius:12px; box-shadow: 0 8px 24px rgba(0,0,0,.06); padding:16px; margin-bottom:16px; }
+  .grid { display:grid; gap:12px; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); }
+  label { display:block; font-size:14px; color:#374151; }
+  input, select, button { width:100%; padding:10px 12px; font-size:16px; border:1px solid var(--soft); border-radius:10px; background:white; }
+  input[type="checkbox"] { width:auto; transform: scale(1.1); }
+  .row { display:flex; flex-wrap:wrap; align-items:center; gap:10px; }
+  .btn { background:var(--accent); color:white; border:none; cursor:pointer; padding:10px 14px; border-radius:10px; }
+  .btn.gray { background:#e5e7eb; color:#111; }
+  .btn.red { background:#ef4444; }
+  .pill { display:inline-block; padding:4px 10px; border-radius:999px; font-size:12px; background:#eef2ff; color:#3730a3; }
+  .muted { color:var(--muted); font-size:12px; }
+  #result { background:#f1f5f9; border-radius:10px; padding:12px; display:none; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:10px; border-top:1px solid var(--soft); font-size:14px; vertical-align: top; }
+  canvas { width:100%; height:240px; background:#fff; border:1px solid var(--soft); border-radius:10px; }
+</style>
+</head>
+<body>
+
+<h1>Sleep & Energy Tracker</h1>
+
+<!-- INPUTS -->
+<div class="card">
+  <div class="grid">
+    <label>Date
+      <input type="date" id="date">
+    </label>
+    <label>Energy (1–10)
+      <input type="number" id="energy" min="1" max="10" value="5">
+    </label>
+    <label>Caffeine (mg)
+      <input type="number" id="caffeine" min="0" step="10" value="0">
+    </label>
+  </div>
+
+  <div class="grid" style="margin-top:8px">
+    <label>Bed time
+      <input type="time" id="bed" value="23:30">
+    </label>
+    <label>Wake time
+      <input type="time" id="wake" value="07:00">
+    </label>
+    <label>Exercise (minutes)
+      <input type="number" id="exerciseMin" min="0" step="5" value="0" placeholder="e.g., 20">
+    </label>
+  </div>
+
+  <div class="grid" style="margin-top:8px">
+    <label>Did you follow yesterday’s suggestion?
+      <select id="followedYesterday">
+        <option value="">(select)</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+        <option value="na">N/A / first entry</option>
+      </select>
+    </label>
+    <label>Did that increase your energy?
+      <select id="energyImproved">
+        <option value="">(select)</option>
+        <option value="yes">Yes</option>
+        <option value="no">No</option>
+        <option value="unsure">Not sure</option>
+      </select>
+    </label>
+  </div>
+
+  <div class="row" style="margin-top:10px">
+    <button class="btn" id="btnSuggest">Get Suggestion</button>
+    <button class="btn gray" id="btnSave">Save Today</button>
+  </div>
+
+  <div id="result" style="margin-top:12px"></div>
+  <div class="muted" style="margin-top:6px">Lifestyle guidance, not medical advice.</div>
+</div>
+
+<!-- KPIs & CHART -->
+<div class="card">
+  <div class="row" style="justify-content:space-between;">
+    <div><span class="pill" id="kpiCount">0 entries</span> <span class="pill" id="kpiRange">0% days in 7–9 h</span> <span class="pill" id="kpiFollow">0% “followed → energy up”</span></div>
+    <div class="row">
+      <button class="btn gray" id="btnExport">Export CSV</button>
+      <button class="btn red" id="btnReset">Reset All Data</button>
+    </div>
+  </div>
+  <div style="margin-top:12px">
+    <canvas id="energyChart" width="900" height="260"></canvas>
+  </div>
+</div>
+
+<!-- HISTORY -->
+<div class="card">
+  <h3 style="margin:0 0 8px 0;">History</h3>
+  <div class="muted" style="margin-bottom:8px">Most recent first.</div>
+  <div style="overflow:auto;">
+    <table id="table">
+      <thead>
+        <tr>
+          <th>Date</th><th>Bed</th><th>Wake</th><th>Hours</th><th>Caf (mg)</th><th>Ex (min)</th><th>Energy</th><th>Followed?</th><th>Energy ↑?</th><th>Suggestion</th><th>Delete</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"><tr><td colspan="11" class="muted">No entries yet.</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+  // ===== Utilities =====
+  const $ = (id) => document.getElementById(id);
+  const STORE_KEY = "sleep_energy_entries_v3";
+
+  function todayISO() {
+    const d = new Date();
+    const pad = (n) => String(n).padStart(2, "0");
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`;
+  }
+
+  function minutesFromHHMM(hhmm) {
+    if (!hhmm || !hhmm.includes(":")) return 0;
+    const [h, m] = hhmm.split(":").map(Number);
+    return (h*60 + m) | 0;
+  }
+
+  function hoursBetween(bedStr, wakeStr) {
+    const b = minutesFromHHMM(bedStr);
+    const w = minutesFromHHMM(wakeStr);
+    const diff = (w - b + 1440) % 1440;
+    const mins = diff === 0 ? 1440 : diff; // 24h if same time
+    return Math.min(mins/60, 16);
+  }
+
+  function clamp(n, lo, hi){ return Math.max(lo, Math.min(hi, n)); }
+
+  // ===== Suggestion Logic (updated for exercise minutes) =====
+  function sleepSuggestions(bed, wake, caffeineMg, exerciseMin) {
+    const hrs = hoursBetween(bed, wake);
+
+    // Sleep target window and minute adjustment
+    let targetLow = 7.5, targetHigh = 8.5;
+    if (hrs < 7) { targetLow = 8.0; targetHigh = 9.0; }
+    if (hrs > 9) { targetLow = 7.5; targetHigh = 8.5; }
+    const targetMid = (targetLow + targetHigh) / 2;
+    const deltaMin = Math.round((targetMid - hrs) * 60);
+
+    const tips = [];
+
+    // Primary sleep-duration guidance
+    if (hrs < 7) {
+      tips.push(`Aim for ${targetLow.toFixed(1)}–${targetHigh.toFixed(1)} h. Try sleeping ~${Math.abs(deltaMin)} min longer tonight.`);
+    } else if (hrs > 9) {
+      tips.push(`Aim for ${targetLow.toFixed(1)}–${targetHigh.toFixed(1)} h. Try waking ~${Math.abs(deltaMin)} min earlier for consistency.`);
+    } else {
+      tips.push(`Good: you're within ${targetLow.toFixed(1)}–${targetHigh.toFixed(1)} h. Maintain consistency (±30 min).`);
+    }
+
+    // Bedtime lateness
+    const bedMins = minutesFromHHMM(bed);
+    const late = bedMins > 30; // after 00:30
+    if (late) tips.push("Lights-out before 12:30 AM; start wind-down 30 min earlier.");
+
+    // Caffeine guidance
+    if (caffeineMg > 200) tips.push("Keep caffeine ≤200 mg and avoid after 2 PM.");
+
+    // Exercise minutes guidance
+    const ex = Number(exerciseMin) || 0;
+    if (ex < 10) {
+      tips.push("Add 15–20 min light activity (walk) before 6 PM.");
+    } else if (ex < 20) {
+      tips.push("Great start — add ~10 more minutes today.");
+    } else if (ex <= 60) {
+      tips.push("Nice — 20–60 min is a solid range. Maintain.");
+    } else if (ex <= 90) {
+      tips.push("Strong session — keep it up, but avoid too late in the evening.");
+    } else {
+      tips.push("Over 90 min — consider tapering or finishing earlier to protect sleep quality.");
+    }
+
+    if (hrs >= 7 && hrs <= 9 && caffeineMg <= 200 && ex >= 20 && ex <= 60 && !late) {
+      tips.push("Everything looks good — keep doing what works.");
+    }
+
+    return { hours: hrs, tips };
+  }
+
+  function renderSuggestion(bed, wake, caffeineMg, exerciseMin) {
+    const r = sleepSuggestions(bed, wake, caffeineMg, exerciseMin);
+    const list = r.tips.map(t => `<li>${t}</li>`).join("");
+    $("result").style.display = "block";
+    $("result").innerHTML = `
+      <div><b>Estimated hours slept:</b> ${r.hours.toFixed(2)} h</div>
+      <ul style="margin:8px 0 0 18px">${list}</ul>
+    `;
+    return r;
+  }
+
+  // ===== Data store =====
+  function loadEntries() {
+    try { return JSON.parse(localStorage.getItem(STORE_KEY) || "[]"); }
+    catch { return []; }
+  }
+  function saveEntries(arr) { localStorage.setItem(STORE_KEY, JSON.stringify(arr)); }
+
+  // ===== Table & Chart =====
+  function refreshTable() {
+    const tbody = $("tbody");
+    const entries = loadEntries();
+    if (entries.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="11" class="muted">No entries yet.</td></tr>`;
+      return;
+    }
+    // newest first
+    entries.sort((a,b) => (b.date+a.bed).localeCompare(a.date+b.bed));
+    tbody.innerHTML = entries.map(e => `
+      <tr>
+        <td>${e.date}</td>
+        <td>${e.bed}</td>
+        <td>${e.wake}</td>
+        <td>${Number(e.hours).toFixed(2)}</td>
+        <td>${e.caffeine}</td>
+        <td>${e.exerciseMin}</td>
+        <td>${e.energy}</td>
+        <td>${e.followedYesterday || ""}</td>
+        <td>${e.energyImproved || ""}</td>
+        <td>${e.suggestionShort || ""}</td>
+        <td><button class="btn red" style="padding:6px 10px" onclick="delEntry('${e.id}')">X</button></td>
+      </tr>
+    `).join("");
+  }
+
+  function refreshKPIsAndChart() {
+    const entries = loadEntries().slice().sort((a,b)=>a.date.localeCompare(b.date));
+    const n = entries.length;
+    $("kpiCount").textContent = `${n} ${n===1?"entry":"entries"}`;
+    if (n === 0) {
+      $("kpiRange").textContent = "0% days in 7–9 h";
+      $("kpiFollow").textContent = "0% “followed → energy up”";
+      drawChart([], []);
+      return;
+    }
+    const inRange = entries.filter(e => e.hours >= 7 && e.hours <= 9).length;
+    $("kpiRange").textContent = `${Math.round((inRange / n) * 100)}% days in 7–9 h`;
+
+    const followUp = entries.filter(e => e.followedYesterday === "yes");
+    const followUpImproved = followUp.filter(e => e.energyImproved === "yes");
+    const pctFollowImproved = followUp.length ? Math.round((followUpImproved.length / followUp.length) * 100) : 0;
+    $("kpiFollow").textContent = `${pctFollowImproved}% “followed → energy up”`;
+
+    drawChart(entries.map(e => e.date), entries.map(e => Number(e.energy)));
+  }
+
+  function drawChart(labels, values) {
+    const c = $("energyChart");
+    const ctx = c.getContext("2d");
+    ctx.clearRect(0,0,c.width,c.height);
+
+    const P = { l: 45, r: 12, t: 10, b: 28 };
+    const W = c.width - P.l - P.r;
+    const H = c.height - P.t - P.b;
+
+    // axes
+    ctx.strokeStyle = "#cbd5e1";
+    ctx.beginPath();
+    ctx.moveTo(P.l, P.t);
+    ctx.lineTo(P.l, P.t + H);
+    ctx.lineTo(P.l + W, P.t + H);
+    ctx.stroke();
+
+    if (!values.length) return;
+
+    // y-scale (1..10)
+    const yMin=1, yMax=10;
+    const y = (v) => P.t + H - ( (v - yMin) / (yMax - yMin) ) * H;
+
+    // x-scale
+    const n = values.length;
+    const x = (i) => P.l + (n===1 ? W/2 : (i/(n-1))*W);
+
+    // grid & labels
+    ctx.fillStyle = "#64748b";
+    ctx.font = "12px system-ui, Arial";
+    for (let t=2; t<=10; t+=2){
+      const yy = y(t);
+      ctx.strokeStyle = "#e5e7eb";
+      ctx.beginPath(); ctx.moveTo(P.l, yy); ctx.lineTo(P.l+W, yy); ctx.stroke();
+      ctx.fillText(String(t), 8, yy+4);
+    }
+
+    // line
+    ctx.strokeStyle = "#2563eb";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x(0), y(values[0]));
+    for (let i=1;i<n;i++) ctx.lineTo(x(i), y(values[i]));
+    ctx.stroke();
+
+    // points
+    ctx.fillStyle = "#1d4ed8";
+    for (let i=0;i<n;i++){
+      ctx.beginPath();
+      ctx.arc(x(i), y(values[i]), 3.5, 0, Math.PI*2);
+      ctx.fill();
+    }
+
+    // x labels (sparse)
+    ctx.fillStyle = "#64748b";
+    for (let i=0;i<n;i++){
+      if (i===0 || i===n-1 || i%Math.ceil(n/6)===0) {
+        const tx = x(i);
+        ctx.fillText(labels[i], tx-22, P.t+H+20);
+      }
+    }
+  }
+
+  // ===== Actions =====
+  function getSuggestion() {
+    const bed = $("bed").value, wake = $("wake").value;
+    const caffeine = parseInt($("caffeine").value || "0",10);
+    const exerciseMin = parseInt($("exerciseMin").value || "0",10);
+    return renderSuggestion(bed, wake, caffeine, exerciseMin);
+  }
+
+  function saveToday() {
+    const date = $("date").value || todayISO();
+    const bed = $("bed").value, wake = $("wake").value;
+    const caffeine = parseInt($("caffeine").value || "0",10);
+    const exerciseMin = parseInt($("exerciseMin").value || "0",10);
+    const energy = clamp(parseInt($("energy").value || "5",10), 1, 10);
+    const followedYesterday = $("followedYesterday").value;
+    const energyImproved = $("energyImproved").value;
+
+    const r = sleepSuggestions(bed, wake, caffeine, exerciseMin);
+    const entry = {
+      id: crypto.randomUUID(),
+      date, bed, wake,
+      hours: Number(r.hours.toFixed(2)),
+      caffeine, exerciseMin, energy,
+      followedYesterday, energyImproved,
+      suggestionShort: r.tips[0] || ""
+    };
+
+    const arr = loadEntries();
+    arr.push(entry);
+    saveEntries(arr);
+    refreshTable();
+    refreshKPIsAndChart();
+    $("result").style.display = "block";
+    $("result").innerHTML = `<b>Saved.</b> ${entry.date} — ${entry.hours} h.`;
+  }
+
+  function delEntry(id) {
+    const arr = loadEntries().filter(e => e.id !== id);
+    saveEntries(arr);
+    refreshTable();
+    refreshKPIsAndChart();
+  }
+  window.delEntry = delEntry;
+
+  function exportCSV() {
+    const arr = loadEntries();
+    const header = ["date","bed","wake","hours","caffeine_mg","exercise_min","energy","followedYesterday","energyImproved","suggestion"];
+    const rows = arr.map(e => [
+      e.date, e.bed, e.wake, e.hours, e.caffeine, e.exerciseMin, e.energy, e.followedYesterday||"", e.energyImproved||"", e.suggestionShort||""
+    ]);
+    const csv = [header, ...rows]
+      .map(r => r.map(v => `"${String(v).replaceAll('"','""')}"`).join(","))
+      .join("\n");
+    const blob = new Blob([csv], {type:"text/csv;charset=utf-8;"});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = "sleep_energy_log.csv"; a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function resetAll() {
+    if (!confirm("Delete ALL saved entries?")) return;
+    localStorage.removeItem(STORE_KEY);
+    refreshTable();
+    refreshKPIsAndChart();
+    $("result").style.display = "none";
+  }
+
+  // ===== Init =====
+  $("date").value = todayISO();
+  $("btnSuggest").addEventListener("click", getSuggestion);
+  $("btnSave").addEventListener("click", saveToday);
+  $("btnExport").addEventListener("click", exportCSV);
+  $("btnReset").addEventListener("click", resetAll);
+  refreshTable();
+  refreshKPIsAndChart();
+</script>
+
+</body>
+</html>
+
+</html>
+
